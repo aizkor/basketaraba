@@ -35,6 +35,7 @@ from typing import Iterable
 import requests
 from bs4 import BeautifulSoup
 
+from scraper.pdf import download_acta_pdf
 from scraper.common import (
     BASE,
     USER_AGENT,
@@ -289,6 +290,7 @@ def crawl(
     category_id: str | None = None,
     group_id: str | None = None,
     heading: str | None = None,
+    download_pdfs: bool = True,
 ) -> dict:
     started_at = time.monotonic()
     client = Client(sleep=sleep)
@@ -296,6 +298,10 @@ def crawl(
     cached_week_reads = 0
     cached_match_reads = 0
     failed_match_fetches = 0
+    pdf_downloaded = 0
+    pdf_cached = 0
+    pdf_missing = 0
+    pdf_skipped = 0
 
     log.info("Resolving group: %s", group_name)
     group = resolve_group(client, group_name, category_id=category_id, group_id=group_id, heading=heading)
@@ -535,24 +541,62 @@ def crawl(
     for i, pid in enumerate(sorted(seen_ids), 1):
         raw_path = raw_dir / f"partido_{pid}.html"
         json_path = matches_dir / f"{pid}.json"
+        detail_status: str | None = None
         if json_path.exists() and not force:
             cached_match_reads += 1
             log.info("[%d/%d] %s (cached)", i, len(seen_ids), pid)
+            try:
+                cached_detail = json.loads(json_path.read_text(encoding="utf-8"))
+                detail_status = cached_detail.get("status")
+            except Exception:
+                detail_status = None
+        else:
+            log.info("[%d/%d] %s", i, len(seen_ids), pid)
+            try:
+                html, detail = fetch_match(client, pid)
+            except Exception as exc:
+                failed_match_fetches += 1
+                log.exception("Failed to fetch partido %s: %s", pid, exc)
+                continue
+            if detail.status not in ("FINALIZADO", "SUSPENDIDO"):
+                log.warning("Skipping in-progress match %s (status=%s)", pid, detail.status)
+                continue
+            _write_raw(raw_path, html)
+            _write_json(json_path, detail)
+            detail_status = detail.status
+
+        # PDF acta download (E1) — only for finished/suspended matches.
+        if not download_pdfs:
+            pdf_skipped += 1
+            log.info("pdf skipped: acta_%s.pdf (--no-pdf)", pid)
             continue
-        log.info("[%d/%d] %s", i, len(seen_ids), pid)
-        try:
-            html, detail = fetch_match(client, pid)
-        except Exception as exc:
-            failed_match_fetches += 1
-            log.exception("Failed to fetch partido %s: %s", pid, exc)
+        if detail_status not in ("FINALIZADO", "SUSPENDIDO"):
+            pdf_skipped += 1
+            log.info("pdf skipped: acta_%s.pdf (status=%s)", pid, detail_status)
             continue
-        if detail.status not in ("FINALIZADO", "SUSPENDIDO"):
-            log.warning("Skipping in-progress match %s (status=%s)", pid, detail.status)
-            continue
-        _write_raw(raw_path, html)
-        _write_json(json_path, detail)
+        pdf_target = raw_dir / f"acta_{pid}.pdf"
+        existed_before = pdf_target.exists()
+        pdf_path = download_acta_pdf(
+            pid, raw_dir,
+            force=force,
+            session=client.s,
+            sleep_seconds=sleep,
+        )
+        if pdf_path is None:
+            pdf_missing += 1
+            log.info("pdf missing: acta_%s.pdf", pid)
+        elif existed_before and not force:
+            pdf_cached += 1
+            log.info("pdf cached: acta_%s.pdf", pid)
+        else:
+            pdf_downloaded += 1
+            log.info("pdf downloaded: acta_%s.pdf", pid)
 
     finished_at = time.monotonic()
+    log.info(
+        "PDF actas: %d downloaded, %d cached, %d missing, %d skipped",
+        pdf_downloaded, pdf_cached, pdf_missing, pdf_skipped,
+    )
     log.info(
         "Requests summary: network_requests=%d cached_calendar=%d cached_weeks=%d cached_matches=%d failed_matches=%d calendar_only=%d timings_s(resolve=%.3f calendar=%.3f index=%.3f detail=%.3f total=%.3f)",
         client.request_count,
@@ -575,6 +619,10 @@ def crawl(
         "cached_matches": cached_match_reads,
         "failed_matches": failed_match_fetches,
         "calendar_only": cal_added,
+        "pdf_downloaded": pdf_downloaded,
+        "pdf_cached": pdf_cached,
+        "pdf_missing": pdf_missing,
+        "pdf_skipped": pdf_skipped,
         "timings_s": {
             "resolve": round(resolved_at - started_at, 3),
             "calendar": round(calendar_loaded_at - resolved_at, 3),
@@ -702,6 +750,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     p.add_argument("--sleep", type=float, default=0.4, help="Seconds between HTTP requests (default: 0.4)")
     p.add_argument("--season", default=None, help="Season label, e.g. '2025-26' (auto-detected if omitted)")
     p.add_argument("--force", action="store_true", help="Re-download even if cached files exist")
+    p.add_argument("--no-pdf", action="store_true",
+                   help="Skip downloading the official FEB PDF acta for each finished match")
     p.add_argument("--category-id", default=None, help="Pre-resolved category ID (skips jornada page)")
     p.add_argument("--group-id", default=None, help="Pre-resolved group ID (skips dameJornada scan; requires --category-id)")
     p.add_argument("--heading", default=None, help="Raw h3 heading text for group matching")
@@ -755,7 +805,8 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     metrics = crawl(args.group, args.out, args.sleep, args.force,
                     season=args.season,
-                    category_id=args.category_id, group_id=args.group_id, heading=args.heading)
+                    category_id=args.category_id, group_id=args.group_id, heading=args.heading,
+                    download_pdfs=not args.no_pdf)
     if args.metrics_out is not None:
         _write_metrics_file(args.metrics_out, metrics)
     if args.metrics_history_dir is not None:
