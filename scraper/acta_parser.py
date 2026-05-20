@@ -67,6 +67,22 @@ _ANCHOR_PABELLON = re.compile(r"PABELL[OÓ]N", re.IGNORECASE)
 _ANCHOR_ASISTENCIA = re.compile(r"ASISTENCIA|ESPECTADORES|P[UÚ]BLICO", re.IGNORECASE)
 _ANCHOR_FECHA = re.compile(r"FECHA", re.IGNORECASE)
 
+# Digital PDF header: "CATEGORY DD/MM/YYYY HH:MM NAME (LICENSE)"
+# Seen in senior-masculine digital actas (no labeled referee anchors).
+_DIGITAL_HEADER_RE = re.compile(
+    r"(?:SENIOR|JUNIOR|C[AÁ]DETE|INFANTIL|MINI|PREBENJAM[IÍ]N)\s+[^\n]+?"
+    r"\s+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(\d{1,2}:\d{2})\s+(.+)",
+    re.IGNORECASE,
+)
+# Standalone secondary referee line: "SURNAME, INITIAL (LICENSE_NUM)"
+# Matches a line that is nothing but a name + parenthesised number.
+_DIGITAL_REF_LINE_RE = re.compile(
+    r"^([A-ZÁÉÍÓÚÑÜ][A-Za-záéíóúñüÁÉÍÓÚÑÜ]+(?:\s+[A-Za-záéíóúñüÁÉÍÓÚÑÜ]+)*"
+    r"(?:\s*,\s*[A-Za-záéíóúñüÁÉÍÓÚÑÜ.]+)?)"  # NAME, INITIAL
+    r"\s*\((\d{2,5})\)\s*$",                    # (LICENSE_NUM)
+    re.MULTILINE,
+)
+
 # A "name" token in Spanish actas: uppercase letters incl. accented + spaces,
 # 2+ chars, at least one space (forename + surname). Lowercase tail allowed
 # because OCR occasionally returns mixed case.
@@ -292,7 +308,41 @@ def _parse_officials(text: str, result: dict[str, Any], warnings: list[str]) -> 
 
     if (result["officials"]["referee_principal"]["name"] is None
             and result["officials"]["referee_auxiliar"]["name"] is None):
-        warnings.append("no_referees_found")
+        # Fallback: digital PDF format — no labeled anchors.
+        # Primary referee is embedded in the category/date header line;
+        # secondary referees appear as standalone "NAME (LICENSE)" lines
+        # in the last 30 % of the document.
+        hdr_match = _DIGITAL_HEADER_RE.search(text)
+        if hdr_match:
+            primary_segment = hdr_match.group(3)
+            result["officials"]["referee_principal"] = _extract_person(primary_segment)
+
+            # Secondary refs: scan the last 30 % of text for standalone lines.
+            tail_start = int(len(text) * 0.70)
+            tail = text[tail_start:]
+            secondary_found = False
+            for ref_m in _DIGITAL_REF_LINE_RE.finditer(tail):
+                name_part = ref_m.group(1).strip()
+                lic_part = ref_m.group(2)
+                # Skip if this line is identical to the primary referee name.
+                primary_name = result["officials"]["referee_principal"]["name"] or ""
+                if name_part.upper() == primary_name.upper():
+                    continue
+                result["officials"]["referee_auxiliar"] = {
+                    "name": name_part,
+                    "license": lic_part,
+                }
+                secondary_found = True
+                break  # take the first non-primary match
+
+            # Flag which path was used; only warn "no_referees_found" if
+            # the digital fallback also came up empty.
+            if result["officials"]["referee_principal"]["name"] is not None:
+                warnings.append("digital_pdf_format")
+            else:
+                warnings.append("no_referees_found")
+        else:
+            warnings.append("no_referees_found")
 
     # Table officials: anotador, ayudante anotador, cronometrador, operador 24
     seg = _section_between(text, _ANCHOR_AYUDANTE_ANOTADOR, [
