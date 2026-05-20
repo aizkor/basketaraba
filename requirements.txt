@@ -3,3 +3,6 @@ beautifulsoup4>=4.12
 lxml>=5.0
 scrapy>=2.15
 
+# System dependencies (not pip) — install before running scripts/ocr_actas.py:
+#   sudo apt-get install -y ocrmypdf tesseract-ocr tesseract-ocr-spa
+

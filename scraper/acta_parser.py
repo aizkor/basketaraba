@@ -16,22 +16,52 @@ log = logging.getLogger("basketaraba")
 
 # Section anchors. Use \b only around ascii letters; Spanish accent variants
 # are written explicitly because OCR sometimes drops them.
-_ANCHOR_REFEREE_PRINCIPAL = re.compile(r"[ÁA]RBITRO\s+PRINCIPAL", re.IGNORECASE)
+# Basque/bilingual Araba federation forms use "Arb. nagusia/Arb. principal"
+# and "Gertalaria / Entrenador" — both variants are handled below.
+_ANCHOR_REFEREE_PRINCIPAL = re.compile(
+    r"[ÁA]RBITRO\s+PRINCIPAL|Arb\.\s*nagusia\s*/\s*Arb\.\s*principal",
+    re.IGNORECASE,
+)
 _ANCHOR_REFEREE_AUX = re.compile(
-    r"[ÁA]RBITRO\s+(?:AUXILIAR|AYUDANTE|2[ºo°])", re.IGNORECASE,
+    r"[ÁA]RBITRO\s+(?:AUXILIAR|AYUDANTE|2[ºo°])"
+    r"|Arb\.\s*laguntzailea\s*/\s*Arb\.\s*auxiliar",
+    re.IGNORECASE,
 )
 _ANCHOR_MESA = re.compile(r"\bMESA\b", re.IGNORECASE)
-_ANCHOR_ANOTADOR = re.compile(r"\bANOTADOR\b(?!\s*ES)", re.IGNORECASE)
-_ANCHOR_AYUDANTE_ANOTADOR = re.compile(r"AYUDANTE\s+ANOTADOR", re.IGNORECASE)
-_ANCHOR_CRONO = re.compile(r"CRONOMETRADOR", re.IGNORECASE)
+_ANCHOR_ANOTADOR = re.compile(
+    r"\bANOTADOR\b(?!\s*ES)|Apuntatzailea\s*/\s*Anotador",
+    re.IGNORECASE,
+)
+_ANCHOR_AYUDANTE_ANOTADOR = re.compile(
+    r"AYUDANTE\s+ANOTADOR|Apuntatzaile\s*laguntzailea",
+    re.IGNORECASE,
+)
+_ANCHOR_CRONO = re.compile(
+    r"CRONOMETRADOR|Kronometratzailea\s*/\s*Cronometrador",
+    re.IGNORECASE,
+)
 _ANCHOR_OP24 = re.compile(
-    r"OPERADOR\s+(?:DE\s+)?(?:24|VEINTICUATRO)\s*(?:SEGUNDOS)?",
+    r"OPERADOR\s+(?:DE\s+)?(?:24|VEINTICUATRO)\s*(?:SEGUNDOS)?"
+    r"|24\s*[\"']\s*Laguntzailea\s*/\s*Operador\s*24",
     re.IGNORECASE,
 )
 _ANCHOR_COMISARIO = re.compile(r"COMISARIO(?:\s+T[EÉ]CNICO)?", re.IGNORECASE)
-_ANCHOR_ENTRENADOR = re.compile(r"\bENTRENADOR\b", re.IGNORECASE)
-_ANCHOR_AYUDANTE_ENTRENADOR = re.compile(r"AYUDANTE\s+ENTRENADOR", re.IGNORECASE)
-_ANCHOR_VISITANTE = re.compile(r"VISITANTE|EQUIPO\s+B\b", re.IGNORECASE)
+_ANCHOR_ENTRENADOR = re.compile(
+    r"\bENTRENADOR\b|Gertalaria\s*/\s*Entrenador",
+    re.IGNORECASE,
+)
+_ANCHOR_AYUDANTE_ENTRENADOR = re.compile(
+    r"AYUDANTE\s+ENTRENADOR|Entrenador\s+ayudante",
+    re.IGNORECASE,
+)
+# Must match the section header line (with colon), not the form template header box.
+# Araba forms: "Equipo B Taldea: TEAM NAME" marks start of away team section.
+_ANCHOR_VISITANTE = re.compile(
+    r"VISITANTE\b"
+    r"|EQUIPO\s+B\s*:"           # standard FEB: "EQUIPO B:"
+    r"|Equipo\s+B\s+Taldea\s*:", # Araba: "Equipo B Taldea: TEAM NAME"
+    re.IGNORECASE,
+)
 _ANCHOR_INCIDENCIAS = re.compile(r"INCIDENCIAS", re.IGNORECASE)
 _ANCHOR_PABELLON = re.compile(r"PABELL[OÓ]N", re.IGNORECASE)
 _ANCHOR_ASISTENCIA = re.compile(r"ASISTENCIA|ESPECTADORES|P[UÚ]BLICO", re.IGNORECASE)
@@ -40,19 +70,47 @@ _ANCHOR_FECHA = re.compile(r"FECHA", re.IGNORECASE)
 # A "name" token in Spanish actas: uppercase letters incl. accented + spaces,
 # 2+ chars, at least one space (forename + surname). Lowercase tail allowed
 # because OCR occasionally returns mixed case.
+# Also handles "SURNAME, INITIAL" format used in Araba federation forms.
+# OCR may insert a space before the comma (e.g. "SARCIA , A"), so we allow \s*,.
 _NAME_RE = re.compile(
-    r"([A-ZÁÉÍÓÚÑÜ][A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-ZÁÉÍÓÚÑÜ][A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){1,5})"
+    r"([A-ZÁÉÍÓÚÑÜ][A-Za-zÁÉÍÓÚÑÜáéíóúñü]+"
+    r"(?:"
+    r"(?:\s+[A-ZÁÉÍÓÚÑÜ][A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){1,5}"  # normal: FIRSTNAME SURNAME
+    r"|\s*,\s*[A-ZÁÉÍÓÚÑÜ][A-Za-zÁÉÍÓÚÑÜáéíóúñü.]*"     # Araba: SURNAME ,INITIAL
+    r"))"
 )
-# License: 4+ digits, sometimes prefixed with letters (e.g. "ARB1234"). The
-# whole token is what callers care about.
-_LICENSE_RE = re.compile(r"\b([A-Z]{0,4}\d{4,8})\b")
+# License: 4+ digits, sometimes prefixed with letters (e.g. "ARB1234").
+# Araba federation forms use slash-delimited numbers like "06/8" or "1/31".
+_LICENSE_RE = re.compile(r"\b([A-Z]{0,4}\d{1,8}(?:/\d{1,4})?)\b")
 
-# Dorsal + name + license + entries glyph row. OCR may run cells together
-# with variable whitespace. We're permissive: dorsal at start, the
-# entry-state marker is the first single-character glyph after the name/license.
+# Roster line patterns — two supported formats:
+#
+# Standard FEB form:    DORSAL NAME [LICENSE] entries...
+#   e.g. "4 GARCIA LOPEZ 12345 x 2 1 0 ..."
+#
+# Araba federation form: LICENSE |NAME DORSAL| entries...
+#   e.g. "612 |MOYA, YERAY 3| x [s|8|3 | 25 ..."
+#   e.g. "788 |FERNANDEZ DE LUCO, G (CAP) | 4 | (%) ..."
+#
+# We try the Araba pattern first (name inside pipes after a leading number).
+# Named group "dorsal" always contains the player dorsal (1-2 digits).
+# Named group "rest" contains name + entries for further parsing.
 _DORSAL_LINE_RE = re.compile(
     r"^\s*(?P<dorsal>\d{1,2})\s+"
     r"(?P<rest>.+?)\s*$",
+)
+# Araba form: LICENSE |NAME DORSAL_COL| entries...
+# The leading number is 3+ digits (FEB license), name follows "|" (or OCR "l"),
+# dorsal is 1-2 digits after the name (possibly after OCR noise).
+# We allow the name to contain letters, commas, spaces, parentheses, dots (for
+# "(CAP)", initials, etc.) but not raw digits by themselves.
+_ARABA_ROSTER_RE = re.compile(
+    r"^\s*\d{3,}\s+[|l\[]\s*"              # license (3+ digits) then "|","l","[" (OCR variants)
+    r"(?P<name>[A-ZÁÉÍÓÚÑÜa-záéíóúñü]"    # name starts uppercase (or OCR lowercase)
+    r"[A-ZÁÉÍÓÚÑÜa-záéíóúñü,.\s()★✪-]+?)"  # rest of name incl. (CAP), accented chars
+    r"[^A-Za-zÁÉÍÓÚÑÜáéíóúñü0-9]*?"       # optional gap/noise (non-alphanum)
+    r"(?P<dorsal>\d{1,2})"                 # dorsal: 1-2 digits
+    r"(?P<rest>.*?)\s*$",                  # entries
 )
 
 # Entry-state glyphs:
@@ -222,13 +280,15 @@ def _parse_officials(text: str, result: dict[str, Any], warnings: list[str]) -> 
     if seg:
         result["officials"]["referee_principal"] = _extract_person(seg)
 
-    # Referee auxiliar
-    seg = _section_between(text, _ANCHOR_REFEREE_AUX, [
-        _ANCHOR_MESA, _ANCHOR_ANOTADOR, _ANCHOR_COMISARIO,
-        _ANCHOR_ENTRENADOR, _ANCHOR_INCIDENCIAS,
-    ])
-    if seg:
-        result["officials"]["referee_auxiliar"] = _extract_person(seg)
+    # Referee auxiliar — clamp to 200 chars and stop at a blank line to avoid
+    # spilling into team-section content (Araba forms often leave this blank).
+    m_aux = _ANCHOR_REFEREE_AUX.search(text)
+    if m_aux:
+        chunk = text[m_aux.end():m_aux.end() + 200]
+        blank_line = re.search(r"\n\s*\n", chunk)
+        if blank_line:
+            chunk = chunk[:blank_line.start()]
+        result["officials"]["referee_auxiliar"] = _extract_person(chunk)
 
     if (result["officials"]["referee_principal"]["name"] is None
             and result["officials"]["referee_auxiliar"]["name"] is None):
@@ -256,12 +316,17 @@ def _parse_officials(text: str, result: dict[str, Any], warnings: list[str]) -> 
         _ANCHOR_OP24, _ANCHOR_COMISARIO, _ANCHOR_ENTRENADOR, _ANCHOR_INCIDENCIAS,
     ])
     if seg:
-        result["officials"]["cronometrador"] = _extract_person(seg)
+        result["officials"]["cronometrador"] = _extract_person(seg[:200])
 
     seg = _section_between(text, _ANCHOR_OP24, [
         _ANCHOR_COMISARIO, _ANCHOR_ENTRENADOR, _ANCHOR_INCIDENCIAS,
     ])
     if seg:
+        # Clamp and stop at footer noise (e.g. "Arabako Foru" line).
+        seg = seg[:200]
+        blank = re.search(r"\n\s*\n", seg)
+        if blank:
+            seg = seg[:blank.start()]
         result["officials"]["operador_24"] = _extract_person(seg)
 
     seg = _section_between(text, _ANCHOR_COMISARIO, [
@@ -322,11 +387,23 @@ def _parse_entries(segment: str) -> tuple[list[dict[str, Any]], int | None]:
         line = raw_line.strip()
         if not line:
             continue
-        m = _DORSAL_LINE_RE.match(line)
-        if not m:
-            continue
+
+        # Try Araba federation format first: LICENSE |NAME DORSAL| entries...
+        m = _ARABA_ROSTER_RE.match(line)
+        if m:
+            name_fragment = m.group("name")
+            rest = name_fragment + " " + m.group("rest")
+            dorsal_str = m.group("dorsal")
+        else:
+            # Fall back to standard FEB format: DORSAL NAME entries...
+            m = _DORSAL_LINE_RE.match(line)
+            if not m:
+                continue
+            dorsal_str = m.group("dorsal")
+            rest = m.group("rest")
+
         try:
-            dorsal = int(m.group("dorsal"))
+            dorsal = int(dorsal_str)
         except ValueError:
             continue
         if dorsal < 0 or dorsal > 99:
@@ -334,7 +411,6 @@ def _parse_entries(segment: str) -> tuple[list[dict[str, Any]], int | None]:
         if dorsal in seen_dorsals:
             continue
 
-        rest = m.group("rest")
         # A valid roster line should contain a NAME (uppercase letters).
         if not _NAME_RE.search(rest):
             continue
@@ -343,7 +419,7 @@ def _parse_entries(segment: str) -> tuple[list[dict[str, Any]], int | None]:
         seen_dorsals.add(dorsal)
         entries.append({"dorsal": dorsal, "status": status})
 
-        # Captain marker: ★ or " C " near the dorsal/name
+        # Captain marker: ★, (CAP), or " C " near the dorsal/name
         if captain is None and _has_captain_marker(line):
             captain = dorsal
 
@@ -376,6 +452,9 @@ def _classify_entry(rest: str) -> str:
 
 def _has_captain_marker(line: str) -> bool:
     if "★" in line or "✪" in line:
+        return True
+    # Basque/Araba federation forms use "(CAP)" as the captain marker.
+    if re.search(r"\(CAP\)", line, re.IGNORECASE):
         return True
     # Standalone "C" used as captain flag. We're conservative: only inspect
     # the substring AFTER the license token on this row. If the row has no

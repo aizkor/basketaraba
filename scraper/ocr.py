@@ -45,7 +45,7 @@ def ocr_acta_pdf(
 
     cmd = [
         "ocrmypdf",
-        "--skip-text",
+        "--force-ocr",
         "-l", language,
         "--sidecar", str(tmp_txt),
         str(pdf_path),

@@ -7,13 +7,13 @@ Downloads, for a given group of the basketaraba league:
   * every match's player stats per team
   * every match's play-by-play log
 
-Output layout (under --out, default ./data/<group_slug>):
-    group.json              group/category metadata + team roster
-    matches.json            index of all matches in the season
-    matches/<id>.json       per-match structured data
-    raw/calendario.html
-    raw/jornada_<YYYY-MM-DD>.html
-    raw/partido_<id>.html
+Output layout (under --out, default ./data):
+    <season>/<group>/group.json          group/category metadata + team roster
+    <season>/<group>/matches.json        index of all matches in the season
+    <season>/<group>/matches/<id>.json   per-match structured data
+    cache/<season>/<group>/raw/calendario.html
+    cache/<season>/<group>/raw/jornada_<YYYY-MM-DD>.html
+    cache/<season>/<group>/raw/partido_<id>.html
 
 Usage:
     python crawler.py "SENIOR MASCULINA 3ª-GRUPO A"
@@ -261,7 +261,8 @@ def _load_pending(out_dir: Path) -> list[dict]:
         return []
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
+        log.warning("Could not load %s (discarding pending dates): %s", path, exc)
         return []
 
 
@@ -309,37 +310,50 @@ def crawl(
     resolved_at = time.monotonic()
 
     group_slug = _slugify(group.group_name)
-    # Raw cache lives under the flat legacy path (gitignored — no season subdir needed).
-    raw_dir = out_root / group_slug / "raw"
 
-    # If season was passed explicitly we can set out_dir immediately.
+    # If season was passed explicitly we can set out_dir and raw_dir immediately.
     # Otherwise we defer until we have mondays_by_jornada (post-calendar-load).
     out_dir: Path | None = None
+    raw_dir: Path | None = None
     if season is not None:
         out_dir = out_root / season / group_slug
+        raw_dir = out_root / "cache" / season / group_slug / "raw"
 
-    # Also check legacy flat path for an existing group.json (pre-migration run).
-    legacy_dir = out_root / group_slug
-    if out_dir is None and (legacy_dir / "group.json").exists():
-        try:
-            existing = json.loads((legacy_dir / "group.json").read_text(encoding="utf-8"))
-            sj = existing.get("season_jornadas", {})
-            if sj:
-                season = _detect_season(sj)
-                out_dir = out_root / season / group_slug
-                log.info("Season auto-detected from existing group.json: %s", season)
-        except Exception:
-            pass
+    # Also check season-scoped cache and legacy flat path for an existing group.json.
+    if out_dir is None:
+        legacy_dir = out_root / group_slug
+        if (legacy_dir / "group.json").exists():
+            try:
+                existing = json.loads((legacy_dir / "group.json").read_text(encoding="utf-8"))
+                sj = existing.get("season_jornadas", {})
+                if sj:
+                    season = _detect_season(sj)
+                    out_dir = out_root / season / group_slug
+                    raw_dir = out_root / "cache" / season / group_slug / "raw"
+                    log.info("Season auto-detected from existing group.json: %s", season)
+            except Exception as exc:
+                log.warning("Could not read %s for season detection (pass --season explicitly): %s", legacy_dir / "group.json", exc)
+
+    # Temporary raw_dir for reading calendario.html before season is known.
+    # Falls back to legacy flat path so existing caches are reused.
+    legacy_raw_dir = out_root / group_slug / "raw"
+    pre_raw_dir = raw_dir if raw_dir is not None else legacy_raw_dir
 
     # Calendar
-    calendar_raw_path = raw_dir / "calendario.html"
+    calendar_raw_path = pre_raw_dir / "calendario.html"
+    # Also check legacy flat path when season-scoped cache doesn't exist yet.
+    if not calendar_raw_path.exists() and raw_dir is not None:
+        legacy_cal = legacy_raw_dir / "calendario.html"
+        if legacy_cal.exists():
+            calendar_raw_path = legacy_cal
     if calendar_raw_path.exists() and not force:
         cached_calendar_reads += 1
         cal_html = calendar_raw_path.read_text(encoding="utf-8")
         calendar = _parse_calendar(cal_html, group.group_name)
     else:
         cal_html, calendar = fetch_calendar(client, group)
-        _write_raw(calendar_raw_path, cal_html)
+        # Write to season-scoped path if known, else legacy path (will be moved below).
+        _write_raw(pre_raw_dir / "calendario.html", cal_html)
     log.info("Calendar: %d teams, %d matches across %d jornadas",
              len(calendar.teams), len(calendar.matches),
              len({m.jornada for m in calendar.matches}))
@@ -371,6 +385,10 @@ def crawl(
             season = _detect_season(season_jornadas_tmp)
             log.info("Season detected from calendar jornadas: %s", season)
         out_dir = out_root / season / group_slug
+
+    # Now that season is known, fix raw_dir to season-scoped cache path.
+    raw_dir = out_root / "cache" / season / group_slug / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
 
     matches_dir = out_dir / "matches"
 
@@ -529,6 +547,17 @@ def crawl(
     })
     _save_pending(out_dir, jornada_entries)
 
+    venue_by_pid: dict[str, str | None] = {
+        e["partido_id"]: e.get("venue")
+        for e in jornada_entries
+        if e.get("partido_id")
+    }
+    top_scorer_by_pid: dict[str, dict | None] = {
+        e["partido_id"]: e.get("top_scorer")
+        for e in jornada_entries
+        if e.get("partido_id")
+    }
+
     # Group metadata
     _write_json(out_dir / "group.json", {
         "group": _to_dict(group),
@@ -561,8 +590,11 @@ def crawl(
             if detail.status not in ("FINALIZADO", "SUSPENDIDO"):
                 log.warning("Skipping in-progress match %s (status=%s)", pid, detail.status)
                 continue
+            detail.venue = venue_by_pid.get(pid)
             _write_raw(raw_path, html)
-            _write_json(json_path, detail)
+            detail_dict = _to_dict(detail)
+            detail_dict["top_scorer"] = top_scorer_by_pid.get(pid)
+            _write_json(json_path, detail_dict)
             detail_status = detail.status
 
         # PDF acta download (E1) — only for finished/suspended matches.
