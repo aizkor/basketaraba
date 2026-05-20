@@ -82,6 +82,20 @@ _DIGITAL_REF_LINE_RE = re.compile(
     r"\s*\((\d{2,5})\)\s*$",                    # (LICENSE_NUM)
     re.MULTILINE,
 )
+# Digital PDF coach line: NAME (LICENSE) optionally followed by stray numbers/symbols.
+# Must NOT start with a 3+ digit player license or a category keyword.
+_DIGITAL_COACH_RE = re.compile(
+    r"^(?!\d{3,}\s)"                            # not a player-license line
+    r"(?!(?:SENIOR|JUNIOR|C[AÁ]DETE|INFANTIL|MINI|PREBENJAM[IÍ]N)\b)"
+    r"([A-ZÁÉÍÓÚÑÜ][A-Za-záéíóúñüÁÉÍÓÚÑÜ,.\s]+?)"
+    r"\s*\((\d{2,6})\)",
+    re.MULTILINE | re.IGNORECASE,
+)
+# Category keyword prefix — used to exclude the header line from coach detection.
+_DIGITAL_CATEGORY_RE = re.compile(
+    r"^(?:SENIOR|JUNIOR|C[AÁ]DETE|INFANTIL|MINI|PREBENJAM[IÍ]N)\b",
+    re.IGNORECASE,
+)
 
 # A "name" token in Spanish actas: uppercase letters incl. accented + spaces,
 # 2+ chars, at least one space (forename + surname). Lowercase tail allowed
@@ -99,23 +113,27 @@ _NAME_RE = re.compile(
 # Araba federation forms use slash-delimited numbers like "06/8" or "1/31".
 _LICENSE_RE = re.compile(r"\b([A-Z]{0,4}\d{1,8}(?:/\d{1,4})?)\b")
 
-# Roster line patterns — two supported formats:
+# Roster line patterns — three supported formats:
 #
 # Standard FEB form:    DORSAL NAME [LICENSE] entries...
 #   e.g. "4 GARCIA LOPEZ 12345 x 2 1 0 ..."
 #
-# Araba federation form: LICENSE |NAME DORSAL| entries...
+# Araba federation form (scanned): LICENSE |NAME DORSAL| entries...
 #   e.g. "612 |MOYA, YERAY 3| x [s|8|3 | 25 ..."
 #   e.g. "788 |FERNANDEZ DE LUCO, G (CAP) | 4 | (%) ..."
 #
-# We try the Araba pattern first (name inside pipes after a leading number).
+# Araba digital PDF form: LICENSE NAME DORSAL STATUS entries...
+#   e.g. "635 SANTOS, I 1 X"
+#   e.g. "585 CALLEJA, O (CAP) 8 X 8 3 3 10"
+#
+# We try the Araba scanned pattern first, then digital, then standard FEB.
 # Named group "dorsal" always contains the player dorsal (1-2 digits).
 # Named group "rest" contains name + entries for further parsing.
 _DORSAL_LINE_RE = re.compile(
     r"^\s*(?P<dorsal>\d{1,2})\s+"
     r"(?P<rest>.+?)\s*$",
 )
-# Araba form: LICENSE |NAME DORSAL_COL| entries...
+# Araba scanned form: LICENSE |NAME DORSAL_COL| entries...
 # The leading number is 3+ digits (FEB license), name follows "|" (or OCR "l"),
 # dorsal is 1-2 digits after the name (possibly after OCR noise).
 # We allow the name to contain letters, commas, spaces, parentheses, dots (for
@@ -127,6 +145,16 @@ _ARABA_ROSTER_RE = re.compile(
     r"[^A-Za-zÁÉÍÓÚÑÜáéíóúñü0-9]*?"       # optional gap/noise (non-alphanum)
     r"(?P<dorsal>\d{1,2})"                 # dorsal: 1-2 digits
     r"(?P<rest>.*?)\s*$",                  # entries
+)
+# Araba digital PDF form: LICENSE NAME DORSAL STATUS...
+# The leading number is 3+ digits (player license), name follows (no pipe),
+# dorsal is 1-2 digits after name, then status glyph (X, -, or parenthesised).
+_ARABA_DIGITAL_ROSTER_RE = re.compile(
+    r"^\s*\d{3,}\s+"                        # license (3+ digits)
+    r"(?P<name>[A-ZÁÉÍÓÚÑÜ]"               # name starts uppercase
+    r"[A-Za-záéíóúñüÁÉÍÓÚÑÜ,.\s()★✪-]*?)"  # rest of name incl. (CAP)
+    r"\s+(?P<dorsal>\d{1,2})\s+"           # SPACE dorsal SPACE
+    r"(?P<rest>.+)$",                       # status + stats
 )
 
 # Entry-state glyphs:
@@ -392,15 +420,98 @@ def _parse_teams(text: str, result: dict[str, Any], warnings: list[str]) -> None
     if visitante_match:
         home_text = text[:visitante_match.start()]
         away_text = text[visitante_match.end():]
-    else:
-        # Fall back to midpoint split.
-        mid = len(text) // 2
-        home_text = text[:mid]
-        away_text = text[mid:]
-        warnings.append("side_split_heuristic")
+        _parse_one_team(home_text, result["home"], warnings, side="home")
+        _parse_one_team(away_text, result["away"], warnings, side="away")
+        return
 
+    # Digital PDF format: no labeled VISITANTE anchor.
+    # Team names appear on lines 1 and 2 (line 0 is "X").
+    # The away block starts at the 2nd standalone occurrence of the away team name.
+    if "digital_pdf_format" in warnings:
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if len(lines) >= 3:
+            away_name = lines[2]
+            away_pat = re.compile(
+                r"(?m)^" + re.escape(away_name) + r"\s*$"
+            )
+            away_matches = list(away_pat.finditer(text))
+            if len(away_matches) >= 2:
+                split_pos = away_matches[1].start()
+                home_text = text[:split_pos]
+                away_text = text[split_pos:]
+                _parse_one_team(home_text, result["home"], warnings, side="home")
+                _parse_one_team(away_text, result["away"], warnings, side="away")
+                _parse_digital_coaches(home_text, away_text, result, warnings)
+                return
+
+    # Fall back to midpoint split.
+    mid = len(text) // 2
+    home_text = text[:mid]
+    away_text = text[mid:]
+    warnings.append("side_split_heuristic")
     _parse_one_team(home_text, result["home"], warnings, side="home")
     _parse_one_team(away_text, result["away"], warnings, side="away")
+
+
+def _parse_digital_coaches(
+    home_text: str, away_text: str, result: dict[str, Any], warnings: list[str]
+) -> None:
+    """Extract coaches from digital PDF blocks where ENTRENADOR label is absent.
+
+    Home block: NAME (LICENSE) lines that are not player-license lines and not
+    the category/header line → home coaches in order.
+    Away block: same set, but the very last bare NAME (LICENSE) line (no trailing
+    content) is the secondary referee already captured; preceding ones = away coaches.
+    """
+    def _collect_coach_lines(block: str) -> list[tuple[str, str]]:
+        """Return [(name, license), ...] for coach-candidate lines in block."""
+        results = []
+        for line in block.splitlines():
+            ls = line.strip()
+            if not ls:
+                continue
+            # Must contain a parenthesised license number
+            if not re.search(r"\(\d{2,6}\)", ls):
+                continue
+            # Skip player lines (start with 3+ digit license)
+            if re.match(r"^\d{3,}\s", ls):
+                continue
+            # Skip the category/date/referee header line
+            if _DIGITAL_CATEGORY_RE.match(ls):
+                continue
+            # Skip "Powered by TCPDF" and similar footers
+            if re.match(r"Powered\b", ls, re.IGNORECASE):
+                continue
+            m = _DIGITAL_COACH_RE.match(ls)
+            if m:
+                name = m.group(1).strip().rstrip(",").strip()
+                name = re.sub(r"\s{2,}", " ", name)
+                lic = m.group(2)
+                results.append((name, lic))
+        return results
+
+    # Home coaches
+    home_coaches = _collect_coach_lines(home_text)
+    if home_coaches:
+        result["home"]["coach"] = {"name": home_coaches[0][0], "license": home_coaches[0][1]}
+    if len(home_coaches) >= 2:
+        result["home"]["assistant_coach"] = {"name": home_coaches[1][0], "license": home_coaches[1][1]}
+
+    # Away coaches — exclude the last bare NAME (LICENSE) line (= secondary referee)
+    away_candidates = _collect_coach_lines(away_text)
+    # The secondary referee appears as a clean bare line with no trailing content.
+    # Remove it: it's the last entry whose raw line matches the bare pattern exactly.
+    away_bare_lines = [
+        ln.strip() for ln in away_text.splitlines()
+        if _DIGITAL_REF_LINE_RE.match(ln.strip())
+    ]
+    referee_names = {_DIGITAL_REF_LINE_RE.match(ln).group(1).strip() for ln in away_bare_lines}
+    away_coaches = [(n, l) for n, l in away_candidates if n not in referee_names]
+
+    if away_coaches:
+        result["away"]["coach"] = {"name": away_coaches[0][0], "license": away_coaches[0][1]}
+    if len(away_coaches) >= 2:
+        result["away"]["assistant_coach"] = {"name": away_coaches[1][0], "license": away_coaches[1][1]}
 
 
 def _parse_one_team(segment: str, target: dict[str, Any],
@@ -438,19 +549,26 @@ def _parse_entries(segment: str) -> tuple[list[dict[str, Any]], int | None]:
         if not line:
             continue
 
-        # Try Araba federation format first: LICENSE |NAME DORSAL| entries...
+        # Try Araba scanned format first: LICENSE |NAME DORSAL| entries...
         m = _ARABA_ROSTER_RE.match(line)
         if m:
             name_fragment = m.group("name")
             rest = name_fragment + " " + m.group("rest")
             dorsal_str = m.group("dorsal")
         else:
-            # Fall back to standard FEB format: DORSAL NAME entries...
-            m = _DORSAL_LINE_RE.match(line)
-            if not m:
-                continue
-            dorsal_str = m.group("dorsal")
-            rest = m.group("rest")
+            # Try Araba digital PDF format: LICENSE NAME DORSAL STATUS...
+            m = _ARABA_DIGITAL_ROSTER_RE.match(line)
+            if m:
+                name_fragment = m.group("name")
+                rest = name_fragment + " " + m.group("rest")
+                dorsal_str = m.group("dorsal")
+            else:
+                # Fall back to standard FEB format: DORSAL NAME entries...
+                m = _DORSAL_LINE_RE.match(line)
+                if not m:
+                    continue
+                dorsal_str = m.group("dorsal")
+                rest = m.group("rest")
 
         try:
             dorsal = int(dorsal_str)
