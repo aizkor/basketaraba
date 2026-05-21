@@ -594,6 +594,7 @@ def crawl(
             _write_raw(raw_path, html)
             detail_dict = _to_dict(detail)
             detail_dict["top_scorer"] = top_scorer_by_pid.get(pid)
+            detail_dict["acta_url"] = f"{BASE}/actas/{pid}.pdf"
             _write_json(json_path, detail_dict)
             detail_status = detail.status
 
