@@ -1,14 +1,14 @@
-# Usage Guide
+# Guía de uso
 
-All commands assume the virtualenv is active:
+Todos los comandos asumen que el entorno virtual está activo:
 
 ```bash
-source /path/to/venv/bin/activate
+source /ruta/al/venv/bin/activate
 ```
 
 ---
 
-## 1. First-time setup
+## 1. Configuración inicial
 
 ```bash
 python -m venv .venv
@@ -18,151 +18,140 @@ pip install -r requirements.txt
 
 ---
 
-## 2. Single-group pipeline (step by step)
+## 2. Pipeline para un solo grupo (paso a paso)
 
-The three pipeline stages are independent and can be run individually.
+Las tres etapas son independientes y se pueden ejecutar por separado.
 
-### Stage 1 — Scrape
+### Etapa 1 — Extracción
 
 ```bash
-# Basic usage: group name in quotes, output goes to data/<slug>/
+# Uso básico: el grupo entre comillas, la salida va a data/<slug>/
 python crawler.py "SENIOR MASCULINA 3ª-GRUPO A"
 
-# Verbose output
+# Con salida detallada
 python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" -v
 
-# Force refresh the HTML cache (re-download all pages)
+# Forzar re-descarga de la caché HTML
 python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --force
 
-# Choose crawler engine (default is scrapy)
-python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --engine requests
-python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --engine scrapy
-
-# Custom output directory
+# Directorio de salida personalizado
 python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --out /tmp/data
 
-# Adjust delay between requests (default: 0.4 s)
+# Ajustar la pausa entre peticiones (por defecto: 0,4 s)
 python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --sleep 1.0
 
-# Run both engines side-by-side and compare metrics
-python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --compare-engines
-
-# Save metrics JSON
-python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --metrics-out metrics.json
-python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --metrics-history-dir .metrics/
+# Guardar métricas en JSON
+python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --metrics-out metricas.json
+python crawler.py "SENIOR MASCULINA 3ª-GRUPO A" --metrics-history-dir .metricas/
 ```
 
-### Stage 2 — Normalize
+### Etapa 2 — Normalización
 
 ```bash
-# Reads data/<slug>/, writes data/<slug>/database.json
+# Lee data/<slug>/, escribe data/<slug>/database.json
 python stats.py data/senior-masculina-3a-grupo-a
 
-# Custom output path
+# Ruta de salida personalizada
 python stats.py data/senior-masculina-3a-grupo-a --out /tmp/database.json
 ```
 
-### Stage 3 — Build static site
+### Etapa 3 — Generación del sitio
 
 ```bash
-# Single group
+# Un grupo
 python web/build.py data/senior-masculina-3a-grupo-a/database.json
 
-# Multiple groups in one build
+# Varios grupos en una sola construcción
 python web/build.py data/senior-masculina-3a-grupo-a/database.json \
                     data/senior-femenina-1a-grupo-unico/database.json
 
-# All groups at once (auto-discovers data/*/database.json)
+# Todos los grupos a la vez (busca data/*/database.json automáticamente)
 python web/build.py --all
 
-# Custom output and source dirs
+# Directorios de salida y fuente personalizados
 python web/build.py --all --out /tmp/dist --src web/src
+
+# Tema visual (por defecto: compact)
+python web/build.py --all --theme dark
 ```
 
-### Serve locally
+### Servir en local
 
 ```bash
 cd web/dist && python -m http.server 8000
-# open http://localhost:8000
+# Abre http://localhost:8000
 ```
 
 ---
 
-## 3. Single-group dev loop helper
+## 3. Bucle de desarrollo para un grupo
 
-`scripts/run_local_preview.py` chains all three stages and launches the server.
+`scripts/run_local_preview.py` encadena las tres etapas y arranca el servidor.
 
 ```bash
-# Full pipeline for the default group (SENIOR MASCULINA 3ª-GRUPO A)
+# Pipeline completo para el grupo predeterminado (SENIOR MASCULINA 3ª-GRUPO A)
 python scripts/run_local_preview.py
 
-# Specify a group
+# Especificar un grupo
 python scripts/run_local_preview.py --group "JUNIOR MASCULINA 1A-GRUPO UNICO"
 
-# Skip stages that are already up to date
-python scripts/run_local_preview.py --skip-crawl          # skip scraping only
-python scripts/run_local_preview.py --skip-crawl --skip-stats   # rebuild + serve only
+# Saltar etapas ya actualizadas
+python scripts/run_local_preview.py --skip-crawl            # solo normalizar y construir
+python scripts/run_local_preview.py --skip-crawl --skip-stats  # solo construir y servir
 
-# Force-refresh the cache
+# Forzar re-descarga de la caché
 python scripts/run_local_preview.py --force
 
-# Change port
+# Cambiar el puerto
 python scripts/run_local_preview.py --port 9000
 
-# Build without serving
+# Construir sin arrancar el servidor
 python scripts/run_local_preview.py --no-serve
-
-# Choose engine
-python scripts/run_local_preview.py --engine requests
 ```
 
 ---
 
-## 4. Multi-group pipeline
+## 4. Pipeline multi-grupo
 
-`scripts/run_all_groups.py` discovers all active groups from the site, runs the
-full pipeline for each, and builds a combined multi-group site.
+`scripts/run_all_groups.py` descubre todos los grupos activos en la web, ejecuta el pipeline completo para cada uno y genera un sitio combinado.
 
 ```bash
-# Discover all current groups, run full pipeline, serve
+# Descubrir todos los grupos, ejecutar el pipeline completo y servir
 python scripts/run_all_groups.py
 
-# Skip scraping — use whatever data is already on disk
+# Saltar la extracción — usar los datos que ya están en disco
 python scripts/run_all_groups.py --skip-crawl
 
-# Rebuild site only (skip scraping + stats)
+# Solo reconstruir el sitio (sin extracción ni normalización)
 python scripts/run_all_groups.py --skip-crawl --skip-stats
 
-# Build without starting the server
+# Construir sin arrancar el servidor
 python scripts/run_all_groups.py --no-serve
 python scripts/run_all_groups.py --skip-crawl --skip-stats --no-serve
 
-# Scan the full 30-week history when discovering groups (slower, for off-season runs)
+# Escanear las últimas 30 semanas al descubrir grupos (más lento, útil fuera de temporada)
 python scripts/run_all_groups.py --full-season
 
-# Force-refresh all HTML caches
+# Forzar re-descarga de todas las cachés HTML
 python scripts/run_all_groups.py --force
 
-# Choose engine
-python scripts/run_all_groups.py --engine requests
-
-# Change port
+# Cambiar el puerto
 python scripts/run_all_groups.py --port 9000
 ```
 
 ---
 
-## 5. Discover available groups
+## 5. Descubrir grupos disponibles
 
 ```bash
-# List all groups active in the current + previous week (fast, ~2 pages)
+# Grupos activos en la semana actual y la anterior (rápido, ~2 páginas)
 python crawler.py --list-groups
 
-# Scan the full 30-week history (slow, useful off-season)
+# Escanear las últimas 30 semanas (lento, útil fuera de temporada)
 python crawler.py --list-groups --full-season
 ```
 
-Output is a JSON array of group objects:
+La salida es un array JSON:
 
 ```json
 [
@@ -173,20 +162,18 @@ Output is a JSON array of group objects:
 
 ---
 
-## 6. Re-scraping a finished season
+## 6. Re-extraer una temporada finalizada
 
-When the season is over, `_find_group_id` can no longer locate the group by
-scanning recent jornada pages. Supply both IDs directly to bypass the scan:
+Cuando la temporada termina, el crawler ya no puede localizar el grupo escaneando las jornadas recientes. Pasa los IDs directamente para saltarte esa búsqueda:
 
 ```bash
-# --category-id and --group-id come from group.json (or the site URL)
+# --category-id y --group-id se encuentran en group.json o en la URL del sitio
 python crawler.py "SENIOR MASCULINA 2A-GRUPO B" \
-  --engine requests \
   --category-id 68403787734a8 \
   --group-id 6888a8711b5b9
 ```
 
-To find the IDs for a group you've already scraped:
+Para encontrar los IDs de un grupo ya extraído:
 
 ```bash
 cat data/senior-masculina-2a-grupo-b/group.json
@@ -194,36 +181,36 @@ cat data/senior-masculina-2a-grupo-b/group.json
 
 ---
 
-## 7. Common workflows
+## 7. Flujos de trabajo habituales
 
-### Refresh data for one group and preview
+### Actualizar datos de un grupo y previsualizar
 
 ```bash
 python scripts/run_local_preview.py --group "JUNIOR FEMENINA 1A-GRUPO UNICO"
 ```
 
-### Rebuild the site from cached data (no network)
+### Reconstruir el sitio sin red (datos ya en disco)
 
 ```bash
 python scripts/run_local_preview.py --skip-crawl --skip-stats
-# or for all groups:
+# o para todos los grupos:
 python scripts/run_all_groups.py --skip-crawl --skip-stats
 ```
 
-### Full refresh (force re-download of all HTML)
+### Re-descarga completa (forzar actualización de toda la caché)
 
 ```bash
 python scripts/run_all_groups.py --force
 ```
 
-### Build from already-committed data (CI-equivalent)
+### Construir desde los datos del repositorio (equivalente a CI)
 
 ```bash
 python web/build.py --all
 cd web/dist && python -m http.server 8000
 ```
 
-### Inspect the database without the web UI
+### Inspeccionar la base de datos sin el sitio web
 
 ```bash
 python -c "
@@ -235,79 +222,59 @@ print([g['name'] for g in db['teams']])
 
 ---
 
-## 8. Scrapy runner (alternative entrypoint)
-
-`scraper/run.py` is a thin wrapper around the embedded Scrapy project:
-
-```bash
-# Equivalent to: python crawler.py "..." --engine scrapy
-python -m scraper.run "SENIOR MASCULINA 3ª-GRUPO A"
-python -m scraper.run "SENIOR MASCULINA 3ª-GRUPO A" --force
-python -m scraper.run "SENIOR MASCULINA 3ª-GRUPO A" --out /tmp/data
-python -m scraper.run "SENIOR MASCULINA 3ª-GRUPO A" --metrics-out metrics.json
-
-# Or via scrapy directly (lower level)
-scrapy crawl basketaraba -a group="SENIOR MASCULINA 3ª-GRUPO A" -a out=data -a force=false
-```
-
----
-
-## 9. Flag reference
+## 8. Referencia de argumentos
 
 ### `crawler.py`
 
-| Flag | Default | Description |
+| Argumento | Por defecto | Descripción |
 |---|---|---|
-| `--out` | `data` | Root output directory |
-| `--engine` | `scrapy` | Crawler backend: `requests` or `scrapy` |
-| `--sleep` | `0.4` | Seconds between requests |
-| `--force` | off | Re-download all HTML (ignore disk cache) |
-| `--category-id` | auto | Pre-resolved category ID (bypasses dropdown scan) |
-| `--group-id` | auto | Pre-resolved group ID (bypasses jornada scan) |
-| `--heading` | auto | Raw heading text used to filter jornada HTML |
-| `--list-groups` | — | Print JSON list of groups; exit |
-| `--full-season` | off | With `--list-groups`: scan 30 weeks instead of 2 |
-| `--compare-engines` | off | Run both engines and print side-by-side metrics |
-| `--metrics-out` | — | Write metrics to this JSON file |
-| `--metrics-history-dir` | — | Append timestamped metrics under this directory |
-| `-v` | off | Verbose logging |
+| `--out` | `data` | Directorio raíz de salida |
+| `--sleep` | `0.4` | Segundos entre peticiones |
+| `--force` | desactivado | Re-descargar todo el HTML (ignora la caché) |
+| `--category-id` | auto | ID de categoría ya resuelto (omite búsqueda en desplegable) |
+| `--group-id` | auto | ID de grupo ya resuelto (omite búsqueda en jornadas) |
+| `--heading` | auto | Texto de cabecera para filtrar el HTML de jornadas |
+| `--list-groups` | — | Imprime un JSON con los grupos disponibles y termina |
+| `--full-season` | desactivado | Con `--list-groups`: escanea 30 semanas en vez de 2 |
+| `--metrics-out` | — | Escribe métricas en este fichero JSON |
+| `--metrics-history-dir` | — | Añade snapshots con timestamp en este directorio |
+| `-v` | desactivado | Registro detallado |
 
 ### `stats.py`
 
-| Flag | Default | Description |
+| Argumento | Por defecto | Descripción |
 |---|---|---|
-| `--out` | `<group-dir>/database.json` | Output path for the normalized database |
+| `--out` | `<dir-grupo>/database.json` | Ruta de salida de la base de datos normalizada |
 
 ### `web/build.py`
 
-| Flag | Default | Description |
+| Argumento | Por defecto | Descripción |
 |---|---|---|
-| `--all` | off | Auto-discover all `data/*/database.json` files |
-| `--out` | `web/dist` | Output directory for the static site |
-| `--src` | `web/src` | Source directory with `index.html`, `app.js`, `styles.css` |
+| `--all` | desactivado | Busca todos los `data/*/database.json` automáticamente |
+| `--out` | `web/dist` | Directorio de salida del sitio estático |
+| `--src` | `web/src` | Directorio fuente con `index.html`, `app.js` y `styles.css` |
+| `--theme` | `compact` | Tema visual (`compact`, `white`, `dark`, `editorial`, `glass`…) |
 
 ### `scripts/run_local_preview.py`
 
-| Flag | Default | Description |
+| Argumento | Por defecto | Descripción |
 |---|---|---|
-| `--group` | `SENIOR MASCULINA 3ª-GRUPO A` | Group to process |
-| `--engine` | crawler default | Override crawler engine |
-| `--force` | off | Refresh HTML cache |
-| `--skip-crawl` | off | Skip stage 1 |
-| `--skip-stats` | off | Skip stage 2 |
-| `--skip-build` | off | Skip stage 3 |
-| `--no-serve` | off | Don't start the HTTP server |
-| `--port` | `8000` | Preferred server port (auto-increments if busy) |
+| `--group` | `SENIOR MASCULINA 3ª-GRUPO A` | Grupo a procesar |
+| `--force` | desactivado | Actualizar la caché HTML |
+| `--skip-crawl` | desactivado | Saltar la etapa 1 |
+| `--skip-stats` | desactivado | Saltar la etapa 2 |
+| `--skip-build` | desactivado | Saltar la etapa 3 |
+| `--no-serve` | desactivado | No arrancar el servidor HTTP |
+| `--port` | `8000` | Puerto preferido (se incrementa automáticamente si está ocupado) |
 
 ### `scripts/run_all_groups.py`
 
-| Flag | Default | Description |
+| Argumento | Por defecto | Descripción |
 |---|---|---|
-| `--full-season` | off | Scan 30 weeks when discovering groups |
-| `--force` | off | Refresh HTML cache for all groups |
-| `--engine` | crawler default | Override crawler engine for all groups |
-| `--skip-crawl` | off | Skip stage 1 for all groups |
-| `--skip-stats` | off | Skip stage 2 for all groups |
-| `--skip-build` | off | Skip stage 3 |
-| `--no-serve` | off | Don't start the HTTP server |
-| `--port` | `8000` | Preferred server port (auto-increments if busy) |
+| `--full-season` | desactivado | Escanear 30 semanas al descubrir grupos |
+| `--force` | desactivado | Actualizar la caché HTML de todos los grupos |
+| `--skip-crawl` | desactivado | Saltar la etapa 1 en todos los grupos |
+| `--skip-stats` | desactivado | Saltar la etapa 2 en todos los grupos |
+| `--skip-build` | desactivado | Saltar la etapa 3 |
+| `--no-serve` | desactivado | No arrancar el servidor HTTP |
+| `--port` | `8000` | Puerto preferido (se incrementa automáticamente si está ocupado) |

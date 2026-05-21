@@ -2,7 +2,8 @@ requests>=2.31
 beautifulsoup4>=4.12
 lxml>=5.0
 scrapy>=2.15
+pdfplumber>=0.11
 
-# System dependencies (not pip) — install before running scripts/ocr_actas.py:
+# System dependencies (not pip) — install before running scripts/bulk_actas.py:
 #   sudo apt-get install -y ocrmypdf tesseract-ocr tesseract-ocr-spa
 
