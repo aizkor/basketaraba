@@ -281,12 +281,21 @@ def _save_pending(out_dir: Path, index_matches: list[dict]) -> None:
 # Orchestration
 # ---------------------------------------------------------------------------
 
+def _cache_expired(path: Path, days: int) -> bool:
+    """Return True if the cached file is younger than `days` days (should be re-fetched)."""
+    if days <= 0:
+        return False
+    age_days = (time.time() - path.stat().st_mtime) / 86400
+    return age_days < days
+
+
 def crawl(
     group_name: str,
     out_root: Path,
     sleep: float,
     force: bool,
     *,
+    force_recent_days: int = 0,
     season: str | None = None,
     category_id: str | None = None,
     group_id: str | None = None,
@@ -346,7 +355,7 @@ def crawl(
         legacy_cal = legacy_raw_dir / "calendario.html"
         if legacy_cal.exists():
             calendar_raw_path = legacy_cal
-    if calendar_raw_path.exists() and not force:
+    if calendar_raw_path.exists() and not force and not _cache_expired(calendar_raw_path, force_recent_days):
         cached_calendar_reads += 1
         cal_html = calendar_raw_path.read_text(encoding="utf-8")
         calendar = _parse_calendar(cal_html, group.group_name)
@@ -464,7 +473,7 @@ def crawl(
 
     for jornada, monday in sorted(mondays_by_jornada.items()):
         raw_path = raw_dir / f"jornada_{monday.isoformat()}.html"
-        if raw_path.exists() and not force:
+        if raw_path.exists() and not force and not _cache_expired(raw_path, force_recent_days):
             cached_week_reads += 1
             html = raw_path.read_text(encoding="utf-8")
         else:
@@ -571,7 +580,7 @@ def crawl(
         raw_path = raw_dir / f"partido_{pid}.html"
         json_path = matches_dir / f"{pid}.json"
         detail_status: str | None = None
-        if json_path.exists() and not force:
+        if json_path.exists() and not force and not _cache_expired(json_path, force_recent_days):
             cached_match_reads += 1
             log.info("[%d/%d] %s (cached)", i, len(seen_ids), pid)
             try:
@@ -783,6 +792,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     p.add_argument("--sleep", type=float, default=0.4, help="Seconds between HTTP requests (default: 0.4)")
     p.add_argument("--season", default=None, help="Season label, e.g. '2025-26' (auto-detected if omitted)")
     p.add_argument("--force", action="store_true", help="Re-download even if cached files exist")
+    p.add_argument("--force-recent", type=int, default=3, metavar="N",
+                   help="Re-download cached files written within the last N days (default: 3)")
     p.add_argument("--no-pdf", action="store_true",
                    help="Skip downloading the official FEB PDF acta for each finished match")
     p.add_argument("--category-id", default=None, help="Pre-resolved category ID (skips jornada page)")
@@ -837,6 +848,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         return scrapy_main(delegated_argv)
 
     metrics = crawl(args.group, args.out, args.sleep, args.force,
+                    force_recent_days=args.force_recent,
                     season=args.season,
                     category_id=args.category_id, group_id=args.group_id, heading=args.heading,
                     download_pdfs=not args.no_pdf)
