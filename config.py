@@ -2,6 +2,7 @@
 
 # Base URL for all endpoints
 BASE_URL = "https://YOUR_URL_HERE/folder
+ALLOWED_DOMAINS = ["YOUR_DOMAIN_HERE"]
 
 LOGOS_URL = f"{BASE_URL}/folder/items/"
 ACTA_URL_TEMPLATE = f"{BASE_URL}/subfolder/{{item_id}}.ext"
