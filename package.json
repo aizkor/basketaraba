@@ -1,0 +1,19 @@
+{
+  "name": "basketaraba",
+  "version": "1.0.0",
+  "description": "Herramienta para extraer, normalizar y visualizar las estadísticas multi-temporada de los grupos de la liga. Genera un sitio web estático que puede reconstruirse en cualquier momento a partir de los datos almacenados.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "tailwindcss": "^3.4.19"
+  }
+}
